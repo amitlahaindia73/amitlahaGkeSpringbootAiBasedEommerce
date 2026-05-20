@@ -1,0 +1,357 @@
+"""AI order support service for Amitra Commerce Mesh.
+
+Purpose:
+- answer customer-support questions only for the authenticated user's own order
+- keep only the last 10 chat messages in Redis with TTL
+- publish chat events to Kafka for audit/analytics flows
+- use Gemini when configured, but remain safe in fallback mode
+
+Important security rule:
+- this service does not trust a userId from the browser body
+- it expects the BFF/gateway layer to pass trusted auth headers
+- answers must be grounded only in the provided order context
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from typing import Any, Dict, List, Optional
+
+import redis
+import requests
+from fastapi import FastAPI, Header, HTTPException
+from kafka import KafkaProducer
+from pydantic import BaseModel, Field
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from starlette.responses import Response
+
+app = FastAPI(title="AI Order Support Service", version="1.0.0")
+
+REQUEST_COUNTER = Counter("ai_order_support_requests_total", "Total AI order support requests")
+LLM_REQUEST_COUNTER = Counter("ai_order_support_llm_requests_total", "Total Gemini requests")
+LLM_FALLBACK_COUNTER = Counter("ai_order_support_llm_fallback_total", "Total Gemini fallback responses")
+REQUEST_LATENCY = Histogram("ai_order_support_request_latency_seconds", "Latency for support responses")
+
+REDIS_HOST = os.getenv("AI_SUPPORT_REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("AI_SUPPORT_REDIS_PORT", "6379"))
+REDIS_TTL_SECONDS = int(os.getenv("AI_SUPPORT_HISTORY_TTL_SECONDS", str(24 * 60 * 60)))
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("AI_SUPPORT_KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+KAFKA_TOPIC = os.getenv("AI_SUPPORT_KAFKA_TOPIC", "customer.support.chat.events")
+MAX_HISTORY_MESSAGES = int(os.getenv("AI_SUPPORT_MAX_HISTORY_MESSAGES", "10"))
+GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "true").strip().lower() == "true"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "30"))
+
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+
+producer: Optional[KafkaProducer] = None
+try:
+    producer = KafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        value_serializer=lambda value: json.dumps(value).encode("utf-8"),
+        retries=3,
+        linger_ms=50,
+    )
+except Exception as exc:  # pragma: no cover - startup fallback
+    print(f"KAFKA PRODUCER INIT FAILED: {type(exc).__name__}: {exc}", flush=True)
+    producer = None
+
+
+class ItemContext(BaseModel):
+    productId: Optional[str] = None
+    productName: str = "Unknown Product"
+    quantity: int = 0
+    lineTotal: Optional[float] = None
+
+
+class OrderContext(BaseModel):
+    orderNumber: str
+    createdAt: Optional[str] = None
+    totalAmount: Optional[float] = None
+    orderStatus: Optional[str] = None
+    paymentStatus: Optional[str] = None
+    deliveryStatus: Optional[str] = None
+    deliveryRecipientName: Optional[str] = None
+    deliveryPhoneNumber: Optional[str] = None
+    deliveryAddressLine1: Optional[str] = None
+    deliveryAddressLine2: Optional[str] = None
+    deliveryCity: Optional[str] = None
+    deliveryState: Optional[str] = None
+    deliveryPostalCode: Optional[str] = None
+    deliveryCountry: Optional[str] = None
+    items: List[ItemContext] = Field(default_factory=list)
+
+
+class SupportChatRequest(BaseModel):
+    order: OrderContext
+    message: str = Field(min_length=1, max_length=1500)
+
+
+class ChatMessage(BaseModel):
+    role: str
+    text: str
+    timestamp: int
+
+
+class SupportChatResponse(BaseModel):
+    orderNumber: str
+    answer: str
+    history: List[ChatMessage]
+    source: str
+
+
+def history_key(user_id: str, order_number: str) -> str:
+    return f"support-chat:{user_id}:{order_number}"
+
+
+def gemini_available() -> bool:
+    return GEMINI_ENABLED and bool(GEMINI_API_KEY.strip())
+
+
+def append_history(user_id: str, order_number: str, role: str, text: str) -> None:
+    key = history_key(user_id, order_number)
+    payload = json.dumps({"role": role, "text": text, "timestamp": int(time.time())}, ensure_ascii=False)
+    pipe = redis_client.pipeline()
+    pipe.rpush(key, payload)
+    pipe.ltrim(key, -MAX_HISTORY_MESSAGES, -1)
+    pipe.expire(key, REDIS_TTL_SECONDS)
+    pipe.execute()
+
+
+def read_history(user_id: str, order_number: str) -> List[Dict[str, Any]]:
+    raw_items = redis_client.lrange(history_key(user_id, order_number), 0, -1)
+    history: List[Dict[str, Any]] = []
+    for item in raw_items:
+        try:
+            payload = json.loads(item)
+            if isinstance(payload, dict):
+                history.append(payload)
+        except Exception:
+            continue
+    return history[-MAX_HISTORY_MESSAGES:]
+
+
+def publish_event(event: Dict[str, Any]) -> None:
+    if not producer:
+        return
+    try:
+        producer.send(KAFKA_TOPIC, event)
+        producer.flush(timeout=2)
+    except Exception as exc:  # pragma: no cover - runtime fallback
+        print(f"KAFKA PUBLISH FAILED: {type(exc).__name__}: {exc}", flush=True)
+
+
+def build_order_summary(order: Dict[str, Any]) -> str:
+    item_lines = []
+    for item in order.get("items", []):
+        item_lines.append(
+            f"- productId={item.get('productId')} | productName={item.get('productName')} | quantity={item.get('quantity')} | lineTotal={item.get('lineTotal')}"
+        )
+
+    address_parts = [
+        order.get("deliveryAddressLine1"),
+        order.get("deliveryAddressLine2"),
+        order.get("deliveryCity"),
+        order.get("deliveryState"),
+        order.get("deliveryPostalCode"),
+        order.get("deliveryCountry"),
+    ]
+    address = ", ".join([part for part in address_parts if part])
+
+    lines = [
+        f"orderNumber={order.get('orderNumber')}",
+        f"createdAt={order.get('createdAt')}",
+        f"orderStatus={order.get('orderStatus')}",
+        f"paymentStatus={order.get('paymentStatus')}",
+        f"deliveryStatus={order.get('deliveryStatus')}",
+        f"totalAmount={order.get('totalAmount')}",
+        f"deliveryRecipientName={order.get('deliveryRecipientName')}",
+        f"deliveryPhoneNumber={order.get('deliveryPhoneNumber')}",
+        f"deliveryAddress={address}",
+        "items:",
+    ]
+    lines.extend(item_lines if item_lines else ["- none"])
+    return "\n".join(lines)
+
+
+def fallback_answer(message: str, order: Dict[str, Any]) -> str:
+    text = (message or "").lower()
+    items = order.get("items", [])
+    item_names = ", ".join(item.get("productName", "Unknown Product") for item in items[:5]) or "no items"
+
+    if any(keyword in text for keyword in ["delivery", "deliver", "shipped", "shipping", "courier"]):
+        return (
+            f"For order {order.get('orderNumber')}, the current delivery status is {order.get('deliveryStatus') or 'not available yet'}. "
+            f"The order status is {order.get('orderStatus') or 'not available'} and payment status is {order.get('paymentStatus') or 'not available'}."
+        )
+
+    if any(keyword in text for keyword in ["payment", "paid", "refund", "transaction"]):
+        return (
+            f"For order {order.get('orderNumber')}, the current payment status is {order.get('paymentStatus') or 'not available yet'}. "
+            f"The total billed amount is {order.get('totalAmount')}."
+        )
+
+    if any(keyword in text for keyword in ["product", "item", "items", "bought", "ordered"]):
+        return f"For order {order.get('orderNumber')}, your items are: {item_names}."
+
+    if any(keyword in text for keyword in ["address", "phone", "recipient"]):
+        return (
+            f"For order {order.get('orderNumber')}, the delivery recipient is {order.get('deliveryRecipientName') or 'not available'} "
+            f"and the delivery city is {order.get('deliveryCity') or 'not available'}."
+        )
+
+    return (
+        f"I can help only with your selected order {order.get('orderNumber')}. "
+        f"You can ask about delivery status, payment status, ordered items, recipient details, or address details for this order."
+    )
+
+
+def call_gemini_answer(user_id: str, order: Dict[str, Any], history: List[Dict[str, Any]], message: str) -> Dict[str, Any]:
+    fallback_payload = {
+        "answer": fallback_answer(message, order),
+        "source": "fallback",
+    }
+
+    if not gemini_available():
+        LLM_FALLBACK_COUNTER.inc()
+        return fallback_payload
+
+    try:
+        LLM_REQUEST_COUNTER.inc()
+        system_prompt = """You are a secure e-commerce customer support assistant for Amitra Commerce Mesh.
+You must answer ONLY from the provided order context and recent chat history.
+
+Hard rules:
+- Never mention or infer any other customer's data.
+- Never claim actions like refund processed, shipment created, or cancellation done unless clearly present in the provided context.
+- If the question is outside this selected order, politely refuse and say you can help only with this order.
+- If information is missing, say it is not available in the current order context.
+- Keep answers concise, business-safe, and customer-friendly.
+- Return JSON only in the exact shape: {"answer": string, "source": string}
+"""
+        user_prompt = json.dumps(
+            {
+                "userId": user_id,
+                "selectedOrder": order,
+                "history": history[-MAX_HISTORY_MESSAGES:],
+                "customerQuestion": message,
+                "orderSummaryText": build_order_summary(order),
+            },
+            ensure_ascii=False,
+        )
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": user_prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+            },
+        }
+        response = requests.post(
+            url,
+            headers={
+                "x-goog-api-key": GEMINI_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=GEMINI_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        body = response.json()
+        candidates = body.get("candidates", [])
+        parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+        text = parts[0].get("text", "{}") if parts else "{}"
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and isinstance(parsed.get("answer"), str) and parsed.get("answer", "").strip():
+            parsed.setdefault("source", "gemini")
+            return parsed
+    except Exception as exc:
+        print(f"GEMINI fallback due to error: {type(exc).__name__}: {exc}", flush=True)
+
+    LLM_FALLBACK_COUNTER.inc()
+    return fallback_payload
+
+
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    return {
+        "status": "UP",
+        "redis": True,
+        "kafkaConfigured": bool(KAFKA_BOOTSTRAP_SERVERS),
+        "geminiEnabled": GEMINI_ENABLED,
+        "geminiConfigured": bool(GEMINI_API_KEY.strip()),
+        "geminiModel": GEMINI_MODEL,
+    }
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/api/support-chat/history/{order_number}")
+def support_chat_history(
+    order_number: str,
+    x_auth_user_id: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    user_id = (x_auth_user_id or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing authenticated user context.")
+
+    return {
+        "orderNumber": order_number,
+        "history": read_history(user_id, order_number),
+        "maxHistoryMessages": MAX_HISTORY_MESSAGES,
+    }
+
+
+@app.post("/api/support-chat/message", response_model=SupportChatResponse)
+def support_chat_message(
+    request: SupportChatRequest,
+    x_auth_user_id: Optional[str] = Header(default=None),
+    x_auth_email: Optional[str] = Header(default=None),
+) -> SupportChatResponse:
+    REQUEST_COUNTER.inc()
+    start = time.time()
+
+    user_id = (x_auth_user_id or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing authenticated user context.")
+
+    order = request.order.model_dump()
+    order_number = (order.get("orderNumber") or "").strip()
+    if not order_number:
+        raise HTTPException(status_code=400, detail="orderNumber is required.")
+
+    history_before = read_history(user_id, order_number)
+    answer_payload = call_gemini_answer(user_id, order, history_before, request.message.strip())
+    answer_text = str(answer_payload.get("answer") or fallback_answer(request.message, order)).strip()
+
+    append_history(user_id, order_number, "user", request.message.strip())
+    append_history(user_id, order_number, "assistant", answer_text)
+    history_after = read_history(user_id, order_number)
+
+    publish_event(
+        {
+            "eventType": "CUSTOMER_SUPPORT_CHAT",
+            "userId": user_id,
+            "email": x_auth_email,
+            "orderNumber": order_number,
+            "question": request.message.strip(),
+            "answer": answer_text,
+            "source": answer_payload.get("source", "fallback"),
+            "timestamp": int(time.time()),
+        }
+    )
+
+    REQUEST_LATENCY.observe(time.time() - start)
+    return SupportChatResponse(
+        orderNumber=order_number,
+        answer=answer_text,
+        history=[ChatMessage(**item) for item in history_after],
+        source=str(answer_payload.get("source", "fallback")),
+    )

@@ -1,0 +1,114 @@
+version: "3.9"
+
+# -------------------------------------------------------------------
+# This single compose file starts the full local stack for your
+# architecture. Everything runs on a private Docker network so that
+# services can discover each other using container names.
+# -------------------------------------------------------------------
+
+services:
+  postgres-keycloak:
+    image: postgres:16
+    container_name: amitra-postgres-keycloak
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_keycloak_data:/var/lib/postgresql/data
+    networks:
+      - amitra-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: amitra-keycloak
+    command:
+      - start-dev
+      - --import-realm
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres-keycloak
+      KC_DB_URL_DATABASE: ${POSTGRES_DB}
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY: edge
+    volumes:
+      - ./infra/keycloak/realm-export:/opt/keycloak/data/import
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres-keycloak
+    networks:
+      - amitra-net
+
+  mysql:
+    image: mysql:8.3
+    container_name: amitra-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      # The init SQL creates one schema per service and a local app user.
+      - type: bind
+        source: ./infra/mysql/init
+        target: /docker-entrypoint-initdb.d
+      - type: volume
+        source: mysql_data
+        target: /var/lib/mysql
+    ports:
+      - "3306:3306"
+    networks:
+      - amitra-net
+
+  mongodb:
+    image: mongo:7
+    container_name: amitra-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - amitra-net
+
+  redis:
+    image: redis:7.2
+    container_name: amitra-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - amitra-net
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: amitra-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+    networks:
+      - amitra-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: amitra-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      # Local single-broker Kafka settings.
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Internal listener is used by containers on the compose network.
+      # External listener is exposed for your host machine if needed.
+      KAFKA_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - amitra-net
+

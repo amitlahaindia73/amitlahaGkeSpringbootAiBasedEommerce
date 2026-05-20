@@ -1,0 +1,72 @@
+{
+  "realm": "amitra-commerce",
+  "enabled": true,
+  "displayName": "Amitra Commerce Realm",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "roles": {
+    "realm": [
+      { "name": "customer" },
+      { "name": "admin" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "nextjs-bff",
+      "name": "Next.js BFF",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "nextjs-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "https://amitra-commerce.in/*",
+        "https://amitra-commerce.in/api/auth/callback"
+      ],
+      "webOrigins": [
+        "https://amitra-commerce.in"
+      ],
+      "rootUrl": "https://amitra-commerce.in",
+      "baseUrl": "https://amitra-commerce.in",
+      "adminUrl": "https://amitra-commerce.in"
+    }
+  ],
+  "users": [
+    {
+      "username": "demo",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "User",
+      "email": "demo@example.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["customer"]
+    },
+    {
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Amit",
+      "lastName": "Admin",
+      "email": "admin@example.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["customer", "admin"]
+    }
+  ]
+}

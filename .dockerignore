@@ -1,0 +1,9 @@
+**/.classpath
+**/.project
+**/.settings
+**/.idea
+**/.DS_Store
+**/node_modules
+**/.next
+.git
+.gitignore

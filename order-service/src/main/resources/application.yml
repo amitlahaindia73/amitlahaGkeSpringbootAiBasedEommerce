@@ -1,0 +1,40 @@
+server:
+  port: ${SERVER_PORT:8088}
+
+spring:
+  application:
+    name: order-service
+  datasource:
+    url: ${ORDER_DB_URL:jdbc:mysql://mysql:3306/order_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_APP_USER:appuser}
+    password: ${MYSQL_APP_PASSWORD:apppass}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+    consumer:
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+    listener:
+      missing-topics-fatal: false
+    properties:
+      spring.json.use.type.headers: false
+      spring.json.trusted.packages: "*"
+
+app:
+  product-service-base-url: ${PRODUCT_SERVICE_BASE_URL:http://product-service:8083}
+  payment-service-base-url: ${PAYMENT_SERVICE_BASE_URL:http://payment-service:8084}
+

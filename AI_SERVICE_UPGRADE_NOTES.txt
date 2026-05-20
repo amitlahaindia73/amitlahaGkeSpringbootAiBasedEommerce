@@ -1,0 +1,15 @@
+AI recommendation service upgrade summary
+
+Changed file:
+- ai-recommendation-service/main.py
+
+What changed:
+- Preserved all existing AI service endpoints.
+- Added real recommendation ranking before Gemini explanations.
+- Stored richer user interaction fields in MongoDB without breaking old score documents.
+- Read product catalog directly from MongoDB product_db.products.
+- Fixed product metadata enrichment to handle product-service ApiResponse wrapper.
+- Kept Gemini as explanation layer only, with fallback unchanged.
+
+No gateway route changes required.
+No Dockerfile changes required.

@@ -1,0 +1,28 @@
+server:
+  port: ${SERVER_PORT:8085}
+
+spring:
+  application:
+    name: delivery-service
+  datasource:
+    url: ${DELIVERY_DB_URL:jdbc:mysql://mysql:3306/delivery_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_APP_USER:appuser}
+    password: ${MYSQL_APP_PASSWORD:apppass}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}
+    consumer:
+      group-id: ${KAFKA_DELIVERY_GROUP:delivery-service-group}
+      auto-offset-reset: earliest
+    listener:
+      missing-topics-fatal: false
+    properties:
+      spring.json.use.type.headers: false
+      spring.json.trusted.packages: "*"
+

@@ -1,0 +1,12 @@
+This package was cleaned to remove IDE/build artifacts that commonly cause Eclipse/STS package and JRE resolution problems.
+
+Recommended import:
+1. Open STS/Eclipse
+2. File -> Import -> Existing Maven Projects
+3. Select this project root folder
+4. Finish, then Maven -> Update Project
+
+If you previously imported an older broken copy, delete that old project from the IDE workspace first.
+
+
+Login redirect fix included: browser now uses localhost:8080 while server-side token exchange uses keycloak:8080.

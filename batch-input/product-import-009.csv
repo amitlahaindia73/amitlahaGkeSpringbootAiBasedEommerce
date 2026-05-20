@@ -1,0 +1,13 @@
+id,sku,name,category,description,price,availableQuantity,imageUrl,active
+P001,ELC-001,Amitra Phone X,Electronics,Smartphone for demo catalog with local category image,100.00,25,/product-images/electronics.svg,true
+P002,FSH-001,Amitra Runner Shoes,Fashion,Running shoes for fashion category demo,101.00,40,/product-images/fashion.svg,true
+P003,HOM-001,Amitra Table Lamp,Home,Warm table lamp for home category demo,102.00,15,/product-images/home.svg,true
+P004,BOK-001,Amitra Learning Book,Books,Learning book for batch import demo,103.00,60,/product-images/books.svg,true
+P005,BEA-001,Amitra Skin Cream,Beauty,Beauty category product for UI demo,104.00,35,/product-images/beauty.svg,true
+P006,GRC-001,Amitra Organic Rice,Grocery,Grocery category sample product,105.00,90,/product-images/grocery.svg,true
+P007,KIT-001,Amitra Fry Pan,Kitchen,Kitchen category sample product,106.00,20,/product-images/kitchen.svg,true
+P008,OFF-001,Amitra Office Chair,Office,Office category sample product,107.00,12,/product-images/office.svg,true
+P009,SPT-001,Amitra Football,Sports,Sports category sample product,108.00,55,/product-images/sports.svg,true
+P010,TOY-001,Amitra Toy Car,Toys,Toy category sample product,109.00,80,/product-images/toys.svg,true
+P011,ELC-002,Amitra Laptop Pro,Electronics,Laptop demo product for second page,110.00,18,/product-images/electronics.svg,true
+P012,FSH-002,Amitra Jacket,Fashion,Fashion demo product for second page,111.00,22,/product-images/fashion.svg,true

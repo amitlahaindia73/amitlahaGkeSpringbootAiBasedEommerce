@@ -1,0 +1,299 @@
+  server:
+    port: ${SERVER_PORT:8081}
+
+  spring:
+    application:
+      name: api-gateway
+
+    data:
+      redis:
+        host: ${REDIS_HOST:redis}
+        port: ${REDIS_PORT:6379}
+        timeout: 2s
+
+    security:
+      oauth2:
+        resourceserver:
+          jwt:
+            jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://keycloak:8080/realms/amitra-commerce/protocol/openid-connect/certs}
+
+    cloud:
+      gateway:
+        default-filters:
+          - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+
+        routes:
+
+          # =========================================================
+          # USER SERVICE
+          # =========================================================
+          - id: user-service
+            uri: ${USER_SERVICE_URL:http://user-service:8082}
+            predicates:
+              - Path=/api/users/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: userServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+              - name: RequestRateLimiter
+                args:
+                  redis-rate-limiter.replenishRate: 10
+                  redis-rate-limiter.burstCapacity: 20
+                  key-resolver: "#{@principalNameKeyResolver}"
+
+          # =========================================================
+          # PRODUCT SERVICE
+          # =========================================================
+          - id: product-service
+            uri: ${PRODUCT_SERVICE_URL:http://product-service:8083}
+            predicates:
+              - Path=/api/products/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: productServiceCircuitBreaker
+
+          # =========================================================
+          # CART SERVICE
+          # =========================================================
+          - id: cart-service
+            uri: ${CART_SERVICE_URL:http://cart-service:8089}
+            predicates:
+              - Path=/api/cart/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: cartServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # ORDER SERVICE
+          # =========================================================
+          - id: order-service
+            uri: ${ORDER_SERVICE_URL:http://order-service:8088}
+            predicates:
+              - Path=/api/orders/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: orderServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # ORDER ADMIN SERVICE
+          # =========================================================
+          - id: order-service-admin
+            uri: ${ORDER_SERVICE_URL:http://order-service:8088}
+            predicates:
+              - Path=/api/admin/orders/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: orderServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # PAYMENT SERVICE
+          # =========================================================
+          - id: payment-service
+            uri: ${PAYMENT_SERVICE_URL:http://payment-service:8084}
+            predicates:
+              - Path=/api/payments/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: paymentServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # DELIVERY SERVICE
+          # =========================================================
+          - id: delivery-service
+            uri: ${DELIVERY_SERVICE_URL:http://delivery-service:8085}
+            predicates:
+              - Path=/api/deliveries/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: deliveryServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # NOTIFICATION SERVICE
+          # =========================================================
+          - id: notification-service
+            uri: ${NOTIFICATION_SERVICE_URL:http://notification-service:8086}
+            predicates:
+              - Path=/api/notifications/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: notificationServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # AI RECOMMENDATION SERVICE
+          # =========================================================
+          - id: ai-recommendation-service
+            uri: ${AI_RECOMMENDATION_SERVICE_URL:http://ai-recommendation-service:8000}
+            predicates:
+              - Path=/api/recommendations/**
+
+          # =========================================================
+          # AI ASSISTANT SERVICE
+          # =========================================================
+          - id: ai-assistant-service
+            uri: ${AI_RECOMMENDATION_SERVICE_URL:http://ai-recommendation-service:8000}
+            predicates:
+              - Path=/api/ai/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: aiServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # AI ORDER SUPPORT SERVICE
+          # =========================================================
+          - id: ai-order-support-service
+            uri: ${AI_ORDER_SUPPORT_SERVICE_URL:http://ai-order-support-service:8001}
+            predicates:
+              - Path=/api/support-chat/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: aiOrderSupportCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # PRODUCT BATCH SERVICE
+          # =========================================================
+          - id: product-batch-service
+            uri: ${PRODUCT_BATCH_SERVICE_URL:http://product-batch-service:8087}
+            predicates:
+              - Path=/api/admin/batch/**
+            filters:
+              - name: CircuitBreaker
+                args:
+                  name: productBatchServiceCircuitBreaker
+                  fallbackUri: forward:/fallback/default
+
+          # =========================================================
+          # SWAGGER ROUTES
+          # =========================================================
+
+          - id: user-service-swagger
+            uri: ${USER_SERVICE_URL:http://user-service:8082}
+            predicates:
+              - Path=/user-service/v3/api-docs
+            filters:
+              - RewritePath=/user-service/(?<segment>.*), /${segment}
+
+          - id: product-service-swagger
+            uri: ${PRODUCT_SERVICE_URL:http://product-service:8083}
+            predicates:
+              - Path=/product-service/v3/api-docs
+            filters:
+              - RewritePath=/product-service/(?<segment>.*), /${segment}
+
+          - id: cart-service-swagger
+            uri: ${CART_SERVICE_URL:http://cart-service:8089}
+            predicates:
+              - Path=/cart-service/v3/api-docs
+            filters:
+              - RewritePath=/cart-service/(?<segment>.*), /${segment}
+
+          - id: order-service-swagger
+            uri: ${ORDER_SERVICE_URL:http://order-service:8088}
+            predicates:
+              - Path=/order-service/v3/api-docs
+            filters:
+              - RewritePath=/order-service/(?<segment>.*), /${segment}
+
+          - id: payment-service-swagger
+            uri: ${PAYMENT_SERVICE_URL:http://payment-service:8084}
+            predicates:
+              - Path=/payment-service/v3/api-docs
+            filters:
+              - RewritePath=/payment-service/(?<segment>.*), /${segment}
+
+          - id: delivery-service-swagger
+            uri: ${DELIVERY_SERVICE_URL:http://delivery-service:8085}
+            predicates:
+              - Path=/delivery-service/v3/api-docs
+            filters:
+              - RewritePath=/delivery-service/(?<segment>.*), /${segment}
+
+          - id: notification-service-swagger
+            uri: ${NOTIFICATION_SERVICE_URL:http://notification-service:8086}
+            predicates:
+              - Path=/notification-service/v3/api-docs
+            filters:
+              - RewritePath=/notification-service/(?<segment>.*), /${segment}
+
+          - id: product-batch-service-swagger
+            uri: ${PRODUCT_BATCH_SERVICE_URL:http://product-batch-service:8087}
+            predicates:
+              - Path=/product-batch-service/v3/api-docs
+            filters:
+              - RewritePath=/product-batch-service/(?<segment>.*), /${segment}
+          - id: ai-recommendation-service-swagger
+            uri: ${AI_RECOMMENDATION_SERVICE_URL:http://ai-recommendation-service:8000}
+            predicates:
+              - Path=/ai-recommendation-service/openapi.json
+            filters:
+              - RewritePath=/ai-recommendation-service/(?<segment>.*), /${segment}
+
+          - id: ai-order-support-service-swagger
+            uri: ${AI_ORDER_SUPPORT_SERVICE_URL:http://ai-order-support-service:8001}
+            predicates:
+              - Path=/ai-order-support-service/openapi.json
+            filters:
+              - RewritePath=/ai-order-support-service/(?<segment>.*), /${segment}
+
+  # =========================================================
+  # SPRINGDOC SWAGGER CONFIG
+  # IMPORTANT: MUST START FROM COLUMN 1
+  # =========================================================
+
+  springdoc:
+    api-docs:
+      enabled: true
+
+    swagger-ui:
+      enabled: true
+
+      urls:
+        - name: api-gateway
+          url: /v3/api-docs
+
+        - name: user-service
+          url: /user-service/v3/api-docs
+
+        - name: product-service
+          url: /product-service/v3/api-docs
+
+        - name: cart-service
+          url: /cart-service/v3/api-docs
+
+        - name: order-service
+          url: /order-service/v3/api-docs
+
+        - name: payment-service
+          url: /payment-service/v3/api-docs
+
+        - name: delivery-service
+          url: /delivery-service/v3/api-docs
+
+        - name: notification-service
+          url: /notification-service/v3/api-docs
+
+        - name: product-batch-service
+          url: /product-batch-service/v3/api-docs
+        - name: ai-recommendation-service
+          url: /ai-recommendation-service/openapi.json
+
+        - name: ai-order-support-service
+          url: /ai-order-support-service/openapi.json
+

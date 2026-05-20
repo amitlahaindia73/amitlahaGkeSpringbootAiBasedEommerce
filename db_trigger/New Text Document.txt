@@ -1,0 +1,64 @@
+order_db:status up date log
+
+CREATE TABLE order_status_audit (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    order_number VARCHAR(100) NOT NULL,
+    created_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    order_status VARCHAR(50),
+    payment_status VARCHAR(50),
+    delivery_status VARCHAR(50),
+    old_order_status VARCHAR(50),
+    old_payment_status VARCHAR(50),
+    old_delivery_status VARCHAR(50),
+    PRIMARY KEY (id),
+    INDEX idx_order_status_audit_order_number (order_number),
+    INDEX idx_order_status_audit_created_time (created_time)
+);
+
+
+
+
+
+
+order_db::Trigger
+
+
+DELIMITER $$
+
+CREATE TRIGGER trg_orders_status_audit_after_update
+AFTER UPDATE ON orders
+FOR EACH ROW
+BEGIN
+
+    IF (
+        NOT (OLD.order_status <=> NEW.order_status)
+        OR NOT (OLD.payment_status <=> NEW.payment_status)
+        OR NOT (OLD.delivery_status <=> NEW.delivery_status)
+    ) THEN
+
+        INSERT INTO order_status_audit (
+            order_number,
+            created_time,
+            order_status,
+            payment_status,
+            delivery_status,
+            old_order_status,
+            old_payment_status,
+            old_delivery_status
+        )
+        VALUES (
+            NEW.order_number,
+            NOW(),
+            NEW.order_status,
+            NEW.payment_status,
+            NEW.delivery_status,
+            OLD.order_status,
+            OLD.payment_status,
+            OLD.delivery_status
+        );
+
+    END IF;
+
+END$$
+
+DELIMITER ;

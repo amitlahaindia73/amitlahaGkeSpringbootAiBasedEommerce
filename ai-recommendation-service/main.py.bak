@@ -1,0 +1,552 @@
+"""
+FastAPI AI Recommendation Service (Gemini version)
+
+This service:
+- consumes Kafka product and order events
+- stores lightweight user affinity scores in MongoDB
+- caches final recommendations in Redis
+- exposes the original recommendation endpoint unchanged
+- uses Google Gemini API for explanation and assistant endpoints
+
+Design goals:
+- preserve the existing recommendation logic
+- remove local Ollama dependency
+- keep working even when Gemini is unavailable
+- return structured JSON for UI friendliness
+"""
+
+import json
+import os
+import threading
+import time
+from typing import Any, Dict, List, Optional
+
+import requests
+import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
+from kafka import KafkaConsumer
+from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
+from pydantic import BaseModel, Field
+from pymongo import MongoClient
+import redis
+
+app = FastAPI(title="AI Recommendation Service")
+
+REQUEST_COUNTER = Counter("ai_recommendation_requests_total", "Total recommendation requests")
+LLM_REQUEST_COUNTER = Counter("ai_llm_requests_total", "Total LLM-backed AI requests")
+LLM_FALLBACK_COUNTER = Counter("ai_llm_fallback_total", "Total fallback responses when LLM is unavailable")
+
+MONGO_URI = os.getenv("AI_MONGO_URI", "mongodb://mongodb:27017")
+REDIS_HOST = os.getenv("AI_REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("AI_REDIS_PORT", "6379"))
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("AI_KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+AI_CACHE_TTL_SECONDS = int(os.getenv("AI_CACHE_TTL_SECONDS", "60"))
+
+GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "true").lower() == "true"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "30"))
+
+PRODUCT_SERVICE_BASE_URL = os.getenv("PRODUCT_SERVICE_BASE_URL", "http://product-service:8083")
+PRODUCT_SERVICE_TIMEOUT_SECONDS = int(os.getenv("PRODUCT_SERVICE_TIMEOUT_SECONDS", "5"))
+
+mongo_client = MongoClient(MONGO_URI)
+mongo_db = mongo_client["ai_recommendation_db"]
+user_scores_collection = mongo_db["user_product_scores"]
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+
+
+class ProductAssistantRequest(BaseModel):
+    userId: str
+    question: str
+    currentProduct: Optional[Dict[str, Any]] = None
+    recentViewedProducts: List[Dict[str, Any]] = Field(default_factory=list)
+    recentOrders: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class CompareProductsRequest(BaseModel):
+    userId: str
+    products: List[Dict[str, Any]] = Field(default_factory=list)
+    comparisonGoal: str = "Help compare these products"
+
+
+class HomeSummaryRequest(BaseModel):
+    userId: str
+    recentViewedProducts: List[Dict[str, Any]] = Field(default_factory=list)
+    recentOrders: List[Dict[str, Any]] = Field(default_factory=list)
+    recommendations: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+def normalize_product_id(product_id: Any) -> Optional[str]:
+    if not isinstance(product_id, str):
+        return None
+
+    normalized = product_id.strip()
+    if not normalized:
+        return None
+
+    if normalized.upper() == "ORDER":
+        return None
+
+    return normalized
+
+
+def is_valid_explanation_payload(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+
+    recommendations = payload.get("recommendations")
+    if not isinstance(recommendations, list):
+        return False
+
+    required_fields = {
+        "productId",
+        "score",
+        "whyRecommended",
+        "customerIntent",
+        "recommendedUseCase",
+        "crossSellHint",
+    }
+
+    for item in recommendations:
+        if not isinstance(item, dict):
+            return False
+        if not required_fields.issubset(item.keys()):
+            return False
+
+    return True
+
+
+def transform_base_payload_to_explanations(user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    recommendations = payload.get("recommendations", [])
+    items: List[Dict[str, Any]] = []
+
+    for rec in recommendations:
+        score = rec.get("score", 0)
+        intent = "high-interest" if score >= 5 else "browsing"
+        use_case = "repeat purchase or strong preference" if score >= 5 else "early exploration"
+        cross_sell = (
+            "Consider warranty, accessories, or similar items."
+            if score >= 5
+            else "Compare with related alternatives before checkout."
+        )
+
+        reason = rec.get("reason", "")
+        if reason:
+            why_recommended = f"{reason}. This product aligns with your recent shopping activity."
+        else:
+            why_recommended = "This product aligns with your recent shopping activity and preference pattern."
+
+        items.append(
+            {
+                "productId": rec.get("productId"),
+                "score": score,
+                "whyRecommended": why_recommended,
+                "customerIntent": intent,
+                "recommendedUseCase": use_case,
+                "crossSellHint": cross_sell,
+            }
+        )
+
+    return {
+        "userId": user_id,
+        "recommendations": items,
+        "source": "gemini-transformed",
+    }
+
+
+def update_user_score(user_id: str, product_id: str, increment: int) -> None:
+    user_scores_collection.update_one(
+        {"userId": user_id, "productId": product_id},
+        {"$inc": {"score": increment}},
+        upsert=True,
+    )
+    redis_client.delete(f"recommendations:{user_id}")
+    redis_client.delete(f"recommendation-explanations:{user_id}")
+    redis_client.delete(f"home-summary:{user_id}")
+
+
+def kafka_consumer_worker() -> None:
+    while True:
+        try:
+            consumer = KafkaConsumer(
+                "product.viewed",
+                "order.completed",
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                auto_offset_reset="earliest",
+                group_id="ai-recommendation-service-group",
+                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            )
+
+            for message in consumer:
+                payload = message.value
+                topic = message.topic
+
+                user_id = payload.get("userId")
+                product_id = normalize_product_id(payload.get("productId"))
+                if not user_id or not product_id:
+                    continue
+
+                if topic == "product.viewed":
+                    update_user_score(user_id, product_id, 1)
+                elif topic == "order.completed":
+                    update_user_score(user_id, product_id, 5)
+        except Exception as exc:
+            print(f"Kafka consumer retry due to error: {type(exc).__name__}: {exc}", flush=True)
+            time.sleep(5)
+
+
+@app.on_event("startup")
+def start_background_consumer() -> None:
+    thread = threading.Thread(target=kafka_consumer_worker, daemon=True)
+    thread.start()
+
+
+def get_base_recommendations(user_id: str) -> Dict[str, Any]:
+    cache_key = f"recommendations:{user_id}"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    rows = list(user_scores_collection.find({"userId": user_id}).sort("score", -1))
+    recommendations: List[dict] = [
+        {
+            "productId": row["productId"],
+            "score": row.get("score", 0),
+            "reason": "Derived from local behavior events",
+        }
+        for row in rows
+    ]
+
+    response = {"userId": user_id, "recommendations": recommendations}
+    redis_client.setex(cache_key, AI_CACHE_TTL_SECONDS, json.dumps(response))
+    return response
+
+
+def fetch_product_details(product_id: str) -> Dict[str, Any]:
+    """
+    Enrich recommendation prompts with real product data from product-service.
+    If the lookup fails, return a minimal fallback object so the endpoint never breaks.
+    """
+    fallback = {
+        "productId": product_id,
+        "name": product_id,
+        "category": "Unknown",
+        "brand": "Unknown",
+        "price": None,
+        "shortDescription": "",
+    }
+
+    candidate_urls = [
+        f"{PRODUCT_SERVICE_BASE_URL}/api/products/{product_id}",
+        f"{PRODUCT_SERVICE_BASE_URL}/products/{product_id}",
+    ]
+
+    for url in candidate_urls:
+        try:
+            response = requests.get(url, timeout=PRODUCT_SERVICE_TIMEOUT_SECONDS)
+            if not response.ok:
+                continue
+
+            data = response.json()
+            if not isinstance(data, dict):
+                continue
+
+            return {
+                "productId": data.get("id") or data.get("productId") or product_id,
+                "name": data.get("name") or data.get("productName") or product_id,
+                "category": data.get("category") or data.get("productCategory") or "Unknown",
+                "brand": data.get("brand") or "Unknown",
+                "price": data.get("price"),
+                "shortDescription": data.get("description")
+                or data.get("shortDescription")
+                or "",
+            }
+        except Exception as exc:
+            print(f"PRODUCT DETAIL LOOKUP FAILED for {product_id}: {type(exc).__name__}: {exc}", flush=True)
+
+    return fallback
+
+
+def gemini_available() -> bool:
+    return GEMINI_ENABLED and bool(GEMINI_API_KEY.strip())
+
+
+def call_gemini_json(system_prompt: str, user_prompt: str, fallback_payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not gemini_available():
+        print("GEMINI UNAVAILABLE: returning fallback payload", flush=True)
+        LLM_FALLBACK_COUNTER.inc()
+        return fallback_payload
+
+    LLM_REQUEST_COUNTER.inc()
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        payload = {
+            "systemInstruction": {
+                "parts": [{"text": system_prompt}]
+            },
+            "contents": [
+                {
+                    "parts": [{"text": user_prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "responseMimeType": "application/json"
+            }
+        }
+
+        response = requests.post(
+            url,
+            headers={
+                "x-goog-api-key": GEMINI_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=GEMINI_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+
+        body = response.json()
+        candidates = body.get("candidates", [])
+        if not candidates:
+            print("GEMINI: no candidates returned", flush=True)
+            LLM_FALLBACK_COUNTER.inc()
+            return fallback_payload
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        if not parts:
+            print("GEMINI: no parts returned", flush=True)
+            LLM_FALLBACK_COUNTER.inc()
+            return fallback_payload
+
+        content = parts[0].get("text", "{}")
+        print("GEMINI RAW CONTENT:", content, flush=True)
+
+        parsed = json.loads(content)
+        print("GEMINI PARSED JSON:", json.dumps(parsed, ensure_ascii=False), flush=True)
+
+        return parsed if isinstance(parsed, dict) else fallback_payload
+    except Exception as exc:
+        print(f"GEMINI fallback due to error: {type(exc).__name__}: {exc}", flush=True)
+        LLM_FALLBACK_COUNTER.inc()
+        return fallback_payload
+
+
+def build_fallback_explanations(user_id: str, recommendations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    items = []
+    for rec in recommendations:
+        score = rec.get("score", 0)
+        intent = "high-interest" if score >= 5 else "browsing"
+        use_case = "repeat purchase or strong preference" if score >= 5 else "early exploration"
+        cross_sell = "Consider warranty, accessories, or similar items." if score >= 5 else "Compare with related alternatives before checkout."
+        items.append(
+            {
+                "productId": rec.get("productId"),
+                "score": score,
+                "whyRecommended": f"Recommended from your recent local behavior score of {score}.",
+                "customerIntent": intent,
+                "recommendedUseCase": use_case,
+                "crossSellHint": cross_sell,
+            }
+        )
+    return {"userId": user_id, "recommendations": items, "source": "fallback"}
+
+
+@app.get("/api/recommendations/{user_id}")
+def get_recommendations(user_id: str):
+    REQUEST_COUNTER.inc()
+    return get_base_recommendations(user_id)
+
+
+@app.get("/api/recommendations/{user_id}/explanations")
+def get_recommendation_explanations(user_id: str):
+    print("CURRENT GEMINI MODEL:", GEMINI_MODEL, flush=True)
+    REQUEST_COUNTER.inc()
+
+    cache_key = f"recommendation-explanations:{user_id}"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    base = get_base_recommendations(user_id)
+    fallback = build_fallback_explanations(user_id, base.get("recommendations", []))
+
+    if not base.get("recommendations"):
+        redis_client.setex(cache_key, AI_CACHE_TTL_SECONDS, json.dumps(fallback))
+        return fallback
+
+    enriched_items: List[Dict[str, Any]] = []
+    for rec in base.get("recommendations", []):
+        product_id = rec.get("productId")
+        product_details = fetch_product_details(product_id)
+        enriched_items.append(
+            {
+                "productId": product_id,
+                "score": rec.get("score", 0),
+                "name": product_details.get("name"),
+                "category": product_details.get("category"),
+                "brand": product_details.get("brand"),
+                "price": product_details.get("price"),
+                "shortDescription": product_details.get("shortDescription"),
+            }
+        )
+
+    system_prompt = (
+        "You are a smart e-commerce recommendation engine.\n"
+        "Generate enriched recommendation explanations in natural business language.\n\n"
+        "Rules:\n"
+        "- Use the product metadata provided to make recommendations realistic\n"
+        "- Do not repeat input text exactly\n"
+        "- Do not use the field name 'reason'\n"
+        "- Explain why the user may like the product\n"
+        "- Infer likely customer intent from the score and product context\n"
+        "- Suggest a realistic use case based on category, name, brand, or description\n"
+        "- Suggest a meaningful cross-sell hint related to the product type\n"
+        "- Return JSON only\n\n"
+        "Return exactly this JSON shape:\n"
+        "{"
+        "\"userId\": string,"
+        "\"source\": string,"
+        "\"recommendations\": ["
+        "{"
+        "\"productId\": string,"
+        "\"score\": number,"
+        "\"whyRecommended\": string,"
+        "\"customerIntent\": string,"
+        "\"recommendedUseCase\": string,"
+        "\"crossSellHint\": string"
+        "}"
+        "]"
+        "}\n"
+    )
+
+    user_prompt = json.dumps(
+        {
+            "userId": base.get("userId"),
+            "items": enriched_items,
+        }
+    )
+
+    enriched = call_gemini_json(system_prompt, user_prompt, fallback)
+
+    print("GEMINI ENRICHED BEFORE VALIDATION:", json.dumps(enriched, ensure_ascii=False), flush=True)
+    is_valid = is_valid_explanation_payload(enriched)
+    print("EXPLANATION PAYLOAD VALID:", is_valid, flush=True)
+
+    if enriched.get("source") == "fallback":
+        print("FINAL EXPLANATION SOURCE: fallback (returned directly from fallback path)", flush=True)
+        enriched = fallback
+    elif is_valid:
+        enriched.setdefault("userId", user_id)
+        enriched["source"] = "gemini"
+        print("FINAL EXPLANATION SOURCE: gemini", flush=True)
+    elif isinstance(enriched, dict) and isinstance(enriched.get("recommendations"), list):
+        print("FINAL EXPLANATION SOURCE: gemini-transformed (base payload mapped to rich schema)", flush=True)
+        enriched = transform_base_payload_to_explanations(user_id, enriched)
+    else:
+        print("FINAL EXPLANATION SOURCE: fallback (Gemini payload unusable)", flush=True)
+        enriched = fallback
+
+    redis_client.setex(cache_key, AI_CACHE_TTL_SECONDS, json.dumps(enriched))
+    return enriched
+
+
+@app.post("/api/ai/product-assistant")
+def product_assistant(request: ProductAssistantRequest):
+    REQUEST_COUNTER.inc()
+    fallback = {
+        "userId": request.userId,
+        "answer": (
+            "This assistant is using fallback mode. Based on the provided product and activity, "
+            "focus on price, fit-for-purpose, warranty, and comparable alternatives before checkout."
+        ),
+        "suggestedActions": [
+            "Compare with similar products",
+            "Check warranty and return policy",
+            "Review recent order and browsing pattern",
+        ],
+        "source": "fallback",
+    }
+
+    system_prompt = (
+        "You are a concise e-commerce product assistant. "
+        "Return only valid JSON with shape {userId:string, answer:string, suggestedActions:[string], source:string}."
+    )
+    user_prompt = request.model_dump_json()
+    response = call_gemini_json(system_prompt, user_prompt, fallback)
+    response.setdefault("userId", request.userId)
+    if response.get("source") != "fallback":
+        response["source"] = "gemini"
+    return response
+
+
+@app.post("/api/ai/compare-products")
+def compare_products(request: CompareProductsRequest):
+    REQUEST_COUNTER.inc()
+    fallback = {
+        "userId": request.userId,
+        "summary": "Fallback comparison: choose based on price, features, durability, and fit for your exact use case.",
+        "recommendation": "Pick the product with the clearest value for your primary need.",
+        "source": "fallback",
+    }
+
+    system_prompt = (
+        "You are a concise e-commerce comparison assistant. "
+        "Return only valid JSON with shape {userId:string, summary:string, recommendation:string, source:string}."
+    )
+    user_prompt = request.model_dump_json()
+    response = call_gemini_json(system_prompt, user_prompt, fallback)
+    response.setdefault("userId", request.userId)
+    if response.get("source") != "fallback":
+        response["source"] = "gemini"
+    return response
+
+
+@app.post("/api/ai/home-summary")
+def home_summary(request: HomeSummaryRequest):
+    REQUEST_COUNTER.inc()
+    cache_key = f"home-summary:{request.userId}"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    fallback = {
+        "userId": request.userId,
+        "headline": "Top picks based on your recent activity",
+        "summary": "Your recommendations are shaped by local browsing and purchase behavior captured in the platform.",
+        "source": "fallback",
+    }
+
+    system_prompt = (
+        "You are a concise e-commerce home personalization assistant. "
+        "Return only valid JSON with shape {userId:string, headline:string, summary:string, source:string}."
+    )
+    user_prompt = request.model_dump_json()
+    response = call_gemini_json(system_prompt, user_prompt, fallback)
+    response.setdefault("userId", request.userId)
+    if response.get("source") != "fallback":
+        response["source"] = "gemini"
+    redis_client.setex(cache_key, AI_CACHE_TTL_SECONDS, json.dumps(response))
+    return response
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "UP",
+        "geminiEnabled": GEMINI_ENABLED,
+        "geminiModel": GEMINI_MODEL,
+        "geminiConfigured": bool(GEMINI_API_KEY.strip()),
+        "productServiceBaseUrl": PRODUCT_SERVICE_BASE_URL,
+    }
+
+
+@app.get("/metrics")
+def metrics():
+    return PlainTextResponse(generate_latest().decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

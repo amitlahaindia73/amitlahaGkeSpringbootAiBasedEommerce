@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Root Maven parent for all Java services.
+  This file centralizes shared build and dependency configuration.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Spring Boot parent provides default plugin management,
+      dependency alignment, and compiler defaults.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.2</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.amitra.commercemesh</groupId>
+    <artifactId>amitra-commerce-mesh</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+
+    <!--
+      List all Java modules that belong to this multi-module build.
+    -->
+    <modules>
+        <module>common-security</module>
+        <module>api-gateway</module>
+        <module>user-service</module>
+        <module>product-service</module>
+        <module>payment-service</module>
+        <module>delivery-service</module>
+        <module>notification-service</module>
+        <module>product-batch-service</module>
+        <module>order-service</module>
+        <module>cart-service</module>
+    </modules>
+
+    <properties>
+        <!-- Use Java 21 across all Spring Boot services -->
+        <java.version>21</java.version>
+
+        <!-- Spring Cloud BOM version compatible with Spring Boot 3.3.x -->
+        <spring.cloud.version>2023.0.3</spring.cloud.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!--
+              Import Spring Cloud managed dependencies.
+              Spring Boot dependencies are managed by the Boot parent above.
+            -->
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring.cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+</project>

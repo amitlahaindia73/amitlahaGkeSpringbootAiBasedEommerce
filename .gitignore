@@ -1,0 +1,81 @@
+# ========================
+# Java / Maven
+# ========================
+target/
+**/target/
+
+# ========================
+# Node / Next.js
+# ========================
+node_modules/
+.next/
+out/
+
+# ========================
+# IDE / Editor
+# ========================
+.idea/
+.vscode/
+.settings/
+.project
+.classpath
+*.iml
+
+# ========================
+# OS files
+# ========================
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# ========================
+# Logs
+# ========================
+*.log
+logs/
+
+# ========================
+# Environment / Secrets
+# ========================
+.env
+.env.*
+.env.local
+.env.development.local
+.env.production.local
+
+*.pem
+*.key
+*.crt
+*.pfx
+
+kubeconfig*
+*.kubeconfig
+
+# Kubernetes Secrets (VERY IMPORTANT)
+secret*.yaml
+*secret*.yml
+
+# ========================
+# Docker / Temp
+# ========================
+tmp/
+temp/
+*.tmp
+
+# ========================
+# Build outputs
+# ========================
+dist/
+build/
+
+# ========================
+# IntelliJ / Misc
+# ========================
+*.iws
+
+# ========================
+# Mac / Windows junk
+# ========================
+Icon?
+ehthumbs.db
+Desktop.ini

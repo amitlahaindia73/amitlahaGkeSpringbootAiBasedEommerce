@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amitra-common-config
+  namespace: amitra
+data:
+  SPRING_PROFILES_ACTIVE: kubernetes
+  APP_ENVIRONMENT: gcp
+
+  INFRA_VM_PRIVATE_IP: "10.160.0.2"
+
+  REDIS_HOST: "10.160.0.2"
+  REDIS_PORT: "6379"
+
+  MONGODB_URI: "mongodb://10.160.0.2:27017/product_db"
+  AI_MONGO_URI: "mongodb://10.160.0.2:27017"
+  AI_PRODUCT_DB_NAME: "product_db"
+
+  KAFKA_BOOTSTRAP_SERVERS: "10.160.0.2:9092"
+  AI_KAFKA_BOOTSTRAP_SERVERS: "10.160.0.2:9092"
+  AI_SUPPORT_KAFKA_BOOTSTRAP_SERVERS: "10.160.0.2:9092"
+  AI_SUPPORT_KAFKA_TOPIC: "customer.support.chat.events"
+
+  KEYCLOAK_PUBLIC_BASE_URL: "http://10.160.0.2:8080"
+  KEYCLOAK_INTERNAL_BASE_URL: "http://10.160.0.2:8080"
+  KEYCLOAK_JWK_SET_URI: "http://10.160.0.2:8080/realms/amitra-commerce/protocol/openid-connect/certs"
+
+  USER_DB_URL: "jdbc:mysql://10.160.0.2:3306/user_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false"
+  PAYMENT_DB_URL: "jdbc:mysql://10.160.0.2:3306/payment_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false"
+  DELIVERY_DB_URL: "jdbc:mysql://10.160.0.2:3306/delivery_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false"
+  NOTIFICATION_DB_URL: "jdbc:mysql://10.160.0.2:3306/notification_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false"
+  ORDER_DB_URL: "jdbc:mysql://10.160.0.2:3306/order_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false"
+  CART_DB_URL: "jdbc:mysql://10.160.0.2:3306/cart_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false"
+  BATCH_DB_URL: "jdbc:mysql://10.160.0.2:3306/batch_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false"
+
+  USER_SERVICE_URL: "http://user-service:8082"
+  PRODUCT_SERVICE_URL: "http://product-service:8083"
+  CART_SERVICE_URL: "http://cart-service:8089"
+  ORDER_SERVICE_URL: "http://order-service:8088"
+  PAYMENT_SERVICE_URL: "http://payment-service:8084"
+  DELIVERY_SERVICE_URL: "http://delivery-service:8085"
+  NOTIFICATION_SERVICE_URL: "http://notification-service:8086"
+  PRODUCT_BATCH_SERVICE_URL: "http://product-batch-service:8087"
+
+  PRODUCT_SERVICE_BASE_URL: "http://product-service:8083"
+  PAYMENT_SERVICE_BASE_URL: "http://payment-service:8084"
+  ORDER_SERVICE_BASE_URL: "http://order-service:8088"
+
+  AI_RECOMMENDATION_SERVICE_URL: "http://ai-recommendation-service:8000"
+  AI_ORDER_SUPPORT_SERVICE_URL: "http://ai-order-support-service:8001"
+
+  AI_REDIS_HOST: "10.160.0.2"
+  AI_REDIS_PORT: "6379"
+  AI_SUPPORT_REDIS_HOST: "10.160.0.2"
+  AI_SUPPORT_REDIS_PORT: "6379"
+
+  AI_SUPPORT_HISTORY_TTL_SECONDS: "86400"
+  AI_SUPPORT_MAX_HISTORY_MESSAGES: "10"
+  AI_CACHE_TTL_SECONDS: "60"
+
+  GEMINI_ENABLED: "true"
+  GEMINI_MODEL: "gemini-3.1-flash-lite-preview"
+  GEMINI_TIMEOUT_SECONDS: "30"
+
+  BATCH_STORAGE_MODE: "gcs"
+  BATCH_GCS_INPUT_BUCKET: "amitra-batch-input-amitra-commerce-dev"
+  BATCH_GCS_REPORT_BUCKET: "amitra-batch-output-amitra-commerce-dev"
+
+  BATCH_INPUT_DIRECTORY: "/app/batch-input"
+  BATCH_REPORT_DIRECTORY: "/app/batch-output/reports"
+  BATCH_SCHEDULE_CRON: "0 */5 * * * *"
+  batch.schedule.cron: "0 */5 * * * *"
+
+  JAVA_TOOL_OPTIONS: "-XX:InitialRAMPercentage=20.0 -XX:MaxRAMPercentage=70.0"

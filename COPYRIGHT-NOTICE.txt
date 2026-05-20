@@ -1,0 +1,6 @@
+Amitra Commerce Mesh
+Owner: Amit Laha
+
+Copyright (c) Amit Laha. All rights reserved. Unauthorized copying, modification, redistribution, or commercial reuse of this code is restricted without prior written permission from Amit Laha.
+
+This project archive was regenerated with non-functional comments and ownership notices only. Runtime logic was intended to remain unchanged.

@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-batch-service
+  namespace: amitra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: product-batch-service
+  template:
+    metadata:
+      labels:
+        app: product-batch-service
+    spec:
+      serviceAccountName: batch-ksa
+      containers:
+      - name: product-batch-service
+        image: ${ARTIFACT_REGISTRY_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/product-batch-service:${IMAGE_TAG}
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8087
+        envFrom:
+        - configMapRef:
+            name: amitra-common-config
+        - secretRef:
+            name: amitra-common-secrets
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8087
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8087
+          initialDelaySeconds: 60
+          periodSeconds: 20
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 768Mi
+            cpu: 1000m
+        volumeMounts:
+        - name: batch-work
+          mountPath: /app/batch-work
+      volumes:
+      - name: batch-work
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-batch-service
+  namespace: amitra
+spec:
+  type: ClusterIP
+  selector:
+    app: product-batch-service
+  ports:
+  - name: http
+    port: 8087
+    targetPort: 8087

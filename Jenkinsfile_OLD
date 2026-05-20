@@ -1,0 +1,231 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    parameters {
+        choice(
+            name: 'SERVICE_NAME',
+            choices: [
+                'all',
+                'nextjs-bff',
+                'user-service',
+                'product-service',
+                'payment-service',
+                'delivery-service',
+                'notification-service',
+                'product-batch-service',
+                'order-service',
+                'cart-service',
+                'api-gateway',
+                'ai-recommendation-service',
+                'ai-order-support-service'
+            ],
+            description: 'Select a single service to deploy, or choose all'
+        )
+        booleanParam(
+            name: 'APPLY_CONFIG_AND_SECRETS',
+            defaultValue: true,
+            description: 'Apply namespace, configmap, ingress, and recreate Kubernetes secret before deploy.'
+        )
+    }
+
+    environment {
+        APP_NAMESPACE = 'amitra'
+        GCP_PROJECT_ID = 'amitra-commerce-dev'
+        ARTIFACT_REGISTRY_REGION = 'asia-south1'
+        ARTIFACT_REPOSITORY = 'amitra-repo'
+        GKE_CLUSTER_NAME = 'amitra-gke-cluster'
+        GKE_CLUSTER_ZONE = 'asia-south1-c'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        REGISTRY_BASE = "${ARTIFACT_REGISTRY_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}"
+        OPTIONAL_GCP_SERVICE_ACCOUNT_KEY = '/root/gcp-key.json'
+    }
+
+    stages {
+        stage('Checkout Source') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Verify Required Tools') {
+            steps {
+                sh '''
+                set -e
+                mvn -v
+                docker --version
+                kubectl version --client
+                gcloud --version
+                '''
+            }
+        }
+
+        stage('Authenticate Google Cloud') {
+            steps {
+                sh '''
+                set -e
+
+                ACTIVE_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' || true)
+
+                if [ -n "$ACTIVE_ACCOUNT" ]; then
+                  echo "Using attached or pre-authenticated Google Cloud identity: $ACTIVE_ACCOUNT"
+                elif [ -f "$OPTIONAL_GCP_SERVICE_ACCOUNT_KEY" ]; then
+                  echo "No active gcloud account found. Falling back to service account key file."
+                  gcloud auth activate-service-account --key-file="$OPTIONAL_GCP_SERVICE_ACCOUNT_KEY"
+                else
+                  echo "No active Google Cloud identity found and no fallback key file available."
+                  exit 1
+                fi
+
+                gcloud config set project "$GCP_PROJECT_ID"
+                gcloud container clusters get-credentials "$GKE_CLUSTER_NAME" --zone "$GKE_CLUSTER_ZONE" --project "$GCP_PROJECT_ID"
+                gcloud auth configure-docker "${ARTIFACT_REGISTRY_REGION}-docker.pkg.dev" --quiet
+                '''
+            }
+        }
+
+        stage('Build Maven Services') {
+            steps {
+                sh '''
+                set -e
+                if [ "$SERVICE_NAME" = "all" ] || [ "$SERVICE_NAME" != "nextjs-bff" ]; then
+                  if [ "$SERVICE_NAME" = "all" ]; then
+                    mvn clean install -DskipTests
+                  else
+                    mvn -pl "$SERVICE_NAME" -am clean install -DskipTests
+                  fi
+                fi
+                '''
+            }
+        }
+
+        stage('Build and Push Docker Images') {
+            steps {
+                sh '''
+                set -e
+
+                build_and_push() {
+                  local service="$1"
+                  local dockerfilePath="$2"
+                  local image="${REGISTRY_BASE}/${service}:${IMAGE_TAG}"
+                  echo "Building ${image}"
+                  docker build -t "$image" -f "$dockerfilePath" .
+                  docker push "$image"
+                }
+
+                if [ "$SERVICE_NAME" = "all" ]; then
+                  build_and_push nextjs-bff nextjs-bff/Dockerfile
+                  build_and_push user-service user-service/Dockerfile
+                  build_and_push product-service product-service/Dockerfile
+                  build_and_push payment-service payment-service/Dockerfile
+                  build_and_push delivery-service delivery-service/Dockerfile
+                  build_and_push notification-service notification-service/Dockerfile
+                  build_and_push product-batch-service product-batch-service/Dockerfile
+                  build_and_push order-service order-service/Dockerfile
+                  build_and_push cart-service cart-service/Dockerfile
+                  build_and_push api-gateway api-gateway/Dockerfile
+                  build_and_push ai-recommendation-service ai-recommendation-service/Dockerfile
+                  build_and_push ai-order-support-service ai-order-support-service/Dockerfile
+                elif [ "$SERVICE_NAME" = "nextjs-bff" ]; then
+                  build_and_push nextjs-bff nextjs-bff/Dockerfile
+                else
+                  build_and_push "$SERVICE_NAME" "$SERVICE_NAME/Dockerfile"
+                fi
+                '''
+            }
+        }
+
+        stage('Apply Namespace, Config, and Secret') {
+            when {
+                expression { return params.APPLY_CONFIG_AND_SECRETS }
+            }
+            steps {
+                sh '''
+                set -e
+
+                MYSQL_APP_USER=$(gcloud secrets versions access latest --secret=amitra-mysql-app-user)
+                MYSQL_APP_PASSWORD=$(gcloud secrets versions access latest --secret=amitra-mysql-app-password)
+                KEYCLOAK_REALM=$(gcloud secrets versions access latest --secret=amitra-keycloak-realm)
+                KEYCLOAK_CLIENT_ID=$(gcloud secrets versions access latest --secret=amitra-keycloak-client-id)
+                KEYCLOAK_CLIENT_SECRET=$(gcloud secrets versions access latest --secret=amitra-keycloak-client-secret)
+                GEMINI_API_KEY=$(gcloud secrets versions access latest --secret=amitra-gemini-api-key)
+
+                kubectl apply -f k8s/base/namespace.yaml
+                kubectl apply -f k8s/overlays/gcp/configmap.yaml
+                kubectl apply -f k8s/overlays/gcp/ingress.yaml
+
+                kubectl -n "$APP_NAMESPACE" delete secret amitra-common-secrets --ignore-not-found
+                kubectl -n "$APP_NAMESPACE" create secret generic amitra-common-secrets \
+                  --from-literal=MYSQL_APP_USER="$MYSQL_APP_USER" \
+                  --from-literal=MYSQL_APP_PASSWORD="$MYSQL_APP_PASSWORD" \
+                  --from-literal=KEYCLOAK_REALM="$KEYCLOAK_REALM" \
+                  --from-literal=KEYCLOAK_CLIENT_ID="$KEYCLOAK_CLIENT_ID" \
+                  --from-literal=KEYCLOAK_CLIENT_SECRET="$KEYCLOAK_CLIENT_SECRET" \
+                  --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY"
+                '''
+            }
+        }
+
+        stage('Deploy Workloads') {
+            steps {
+                sh '''
+                set -e
+
+                if [ "$SERVICE_NAME" = "all" ]; then
+                  kubectl apply -k k8s/overlays/gcp
+
+                  kubectl -n "$APP_NAMESPACE" set image deployment/nextjs-bff nextjs-bff="${REGISTRY_BASE}/nextjs-bff:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/user-service user-service="${REGISTRY_BASE}/user-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/product-service product-service="${REGISTRY_BASE}/product-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/payment-service payment-service="${REGISTRY_BASE}/payment-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/delivery-service delivery-service="${REGISTRY_BASE}/delivery-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/notification-service notification-service="${REGISTRY_BASE}/notification-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/product-batch-service product-batch-service="${REGISTRY_BASE}/product-batch-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/order-service order-service="${REGISTRY_BASE}/order-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/cart-service cart-service="${REGISTRY_BASE}/cart-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/api-gateway api-gateway="${REGISTRY_BASE}/api-gateway:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/ai-recommendation-service ai-recommendation-service="${REGISTRY_BASE}/ai-recommendation-service:${IMAGE_TAG}"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/ai-order-support-service ai-order-support-service="${REGISTRY_BASE}/ai-order-support-service:${IMAGE_TAG}"
+                else
+                  kubectl apply -f "k8s/base/${SERVICE_NAME}.yaml"
+                  kubectl -n "$APP_NAMESPACE" set image deployment/"$SERVICE_NAME" "$SERVICE_NAME"="${REGISTRY_BASE}/${SERVICE_NAME}:${IMAGE_TAG}"
+                fi
+                '''
+            }
+        }
+
+        stage('Verify Rollout') {
+            steps {
+                sh '''
+                set -e
+
+                if [ "$SERVICE_NAME" = "all" ]; then
+                  for deploy in nextjs-bff user-service product-service payment-service delivery-service notification-service product-batch-service order-service cart-service api-gateway ai-recommendation-service ai-order-support-service; do
+                    kubectl rollout status deployment/$deploy -n "$APP_NAMESPACE" --timeout=300s
+                  done
+                else
+                  kubectl rollout status deployment/"$SERVICE_NAME" -n "$APP_NAMESPACE" --timeout=300s
+                fi
+
+                kubectl get pods -n "$APP_NAMESPACE"
+                kubectl get svc -n "$APP_NAMESPACE"
+                kubectl get ingress -n "$APP_NAMESPACE"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'GCP build and deployment completed successfully.'
+        }
+        failure {
+            echo 'GCP build or deployment failed. Check the console output for the failing stage.'
+        }
+    }
+}

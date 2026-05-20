@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: amitra
+resources:
+  - namespace.yaml
+  - nextjs-bff.yaml
+  - api-gateway.yaml
+  - user-service.yaml
+  - product-service.yaml
+  - payment-service.yaml
+  - delivery-service.yaml
+  - notification-service.yaml
+  - product-batch-service.yaml
+  - order-service.yaml
+  - cart-service.yaml
+  - ai-recommendation-service.yaml
+  - ai-order-support-service.yaml

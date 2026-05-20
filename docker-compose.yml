@@ -1,0 +1,133 @@
+# Amitra Commerce Mesh infrastructure-only local compose stack.
+# Starts only databases, auth, messaging, and cache services.
+# Microservices are expected to run on Kubernetes.
+# nextjs-bff runs separately with docker compose -f docker-compose.bff.yml up -d
+
+services:
+  postgres-keycloak:
+    image: postgres:16
+    container_name: amitra-postgres-keycloak
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_keycloak_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - amitra-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: amitra-keycloak
+    command:
+      - start-dev
+      - --import-realm
+    depends_on:
+      - postgres-keycloak
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres-keycloak
+      KC_DB_URL_DATABASE: ${POSTGRES_DB}
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY: edge
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_PORT: 8080
+      KC_HOSTNAME_STRICT: "false"
+      JAVA_OPTS: ${KEYCLOAK_JAVA_OPTS:- -Xms256m -Xmx512m}
+    volumes:
+      - ./infra/keycloak/realm-export:/opt/keycloak/data/import
+    ports:
+      - "8080:8080"
+    networks:
+      - amitra-net
+
+  mysql:
+    image: mysql:8.3
+    container_name: amitra-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - type: bind
+        source: ./infra/mysql/init
+        target: /docker-entrypoint-initdb.d
+      - type: volume
+        source: mysql_data
+        target: /var/lib/mysql
+    ports:
+      - "3306:3306"
+    networks:
+      - amitra-net
+
+  mongodb:
+    image: mongo:7
+    container_name: amitra-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - amitra-net
+
+  redis:
+    image: redis:7.2
+    container_name: amitra-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - amitra-net
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: amitra-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      KAFKA_HEAP_OPTS: ${ZOOKEEPER_HEAP_OPTS:- -Xms256m -Xmx256m}
+    ports:
+      - "2181:2181"
+    networks:
+      - amitra-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: amitra-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://host.docker.internal:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:- -Xms256M -Xmx512M}
+    networks:
+      - amitra-net
+
+networks:
+  amitra-net:
+    external: true
+    name: amitra-net
+
+volumes:
+  postgres_keycloak_data:
+    name: amitra_postgres_keycloak_data
+  mysql_data:
+    name: amitra_mysql_data
+  mongo_data:
+    name: amitra_mongo_data
+  redis_data:
+    name: amitra_redis_data

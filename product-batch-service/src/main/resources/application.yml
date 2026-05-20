@@ -1,0 +1,39 @@
+server:
+  port: ${SERVER_PORT:8087}
+spring:
+  application:
+    name: product-batch-service
+  datasource:
+    url: ${BATCH_DB_URL:jdbc:mysql://mysql:3306/batch_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_APP_USER:appuser}
+    password: ${MYSQL_APP_PASSWORD:apppass}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://mongodb:27017/product_db}
+  batch:
+    jdbc:
+      initialize-schema: always
+    job:
+      enabled: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}
+
+batch:
+  input:
+    directory: ${BATCH_INPUT_DIRECTORY:/app/batch-input}
+  report:
+    directory: ${BATCH_REPORT_DIRECTORY:/app/batch-output/reports}
+  storage:
+    mode: ${BATCH_STORAGE_MODE:local}
+  gcs:
+    input-bucket: ${BATCH_GCS_INPUT_BUCKET:}
+    report-bucket: ${BATCH_GCS_REPORT_BUCKET:}
+  schedule:
+    cron: ${BATCH_SCHEDULE_CRON:0 */5 * * * *}

@@ -1,0 +1,22 @@
+server:
+  port: ${SERVER_PORT:8089}
+
+spring:
+  application:
+    name: cart-service
+  datasource:
+    url: ${CART_DB_URL:jdbc:mysql://mysql:3306/cart_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_APP_USER:appuser}
+    password: ${MYSQL_APP_PASSWORD:apppass}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+app:
+  product-service-base-url: ${PRODUCT_SERVICE_BASE_URL:http://product-service:8083}
+  order-service-base-url: ${ORDER_SERVICE_BASE_URL:http://order-service:8088}
+

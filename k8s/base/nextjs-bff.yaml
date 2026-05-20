@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextjs-bff
+  namespace: amitra
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: nextjs-bff
+  template:
+    metadata:
+      labels:
+        app: nextjs-bff
+    spec:
+      containers:
+        - name: nextjs-bff
+          image: asia-south1-docker.pkg.dev/amitra-commerce-dev/amitra-repo/nextjs-bff:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+
+            - name: APP_BASE_URL
+              value: https://amitra-commerce.in
+
+            - name: GATEWAY_BASE_URL
+              value: http://api-gateway:8081
+
+            - name: USER_SERVICE_BASE_URL
+              value: http://user-service:8082
+
+            - name: KEYCLOAK_PUBLIC_BASE_URL
+              value: http://auth.amitra-commerce.in:8080
+
+            - name: KEYCLOAK_PUBLIC_URL
+              value: http://auth.amitra-commerce.in:8080
+
+            - name: KEYCLOAK_INTERNAL_BASE_URL
+              value: http://10.160.0.2:8080
+              
+            - name: KEYCLOAK_INTERNAL_URL
+              value: http://10.160.0.2:8080  
+
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: amitra-common-secrets
+                  key: KEYCLOAK_REALM
+
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: amitra-common-secrets
+                  key: KEYCLOAK_CLIENT_ID
+
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: amitra-common-secrets
+                  key: KEYCLOAK_CLIENT_SECRET
+
+          startupProbe:
+            httpGet:
+              path: /
+              port: 3000
+            failureThreshold: 30
+            periodSeconds: 10
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 500Mi
+              cpu: 512m
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextjs-bff
+  namespace: amitra
+spec:
+  type: ClusterIP
+  selector:
+    app: nextjs-bff
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
