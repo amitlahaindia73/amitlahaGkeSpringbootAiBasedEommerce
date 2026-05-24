@@ -31,7 +31,7 @@ export function isJwtExpired(payload) {
 }
 
 export async function getSessionUser() {
-  const token = await getAccessToken();
+  const token=REDACTED getAccessToken();
   const payload = decodeJwtPayload(token);
 
   if (!payload || isJwtExpired(payload)) {

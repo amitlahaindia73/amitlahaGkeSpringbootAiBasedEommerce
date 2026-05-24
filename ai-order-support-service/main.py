@@ -41,7 +41,7 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv("AI_SUPPORT_KAFKA_BOOTSTRAP_SERVERS", "kafka
 KAFKA_TOPIC = os.getenv("AI_SUPPORT_KAFKA_TOPIC", "customer.support.chat.events")
 MAX_HISTORY_MESSAGES = int(os.getenv("AI_SUPPORT_MAX_HISTORY_MESSAGES", "10"))
 GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "true").strip().lower() == "true"
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEY=REDACTED"GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "30"))
 

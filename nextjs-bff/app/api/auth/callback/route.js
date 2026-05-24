@@ -6,8 +6,7 @@ const KEYCLOAK_INTERNAL_URL =
     process.env.KEYCLOAK_INTERNAL_URL || "http://keycloak:8080";
 const KEYCLOAK_REALM = process.env.KEYCLOAK_REALM || "amitra-commerce";
 const KEYCLOAK_CLIENT_ID = process.env.KEYCLOAK_CLIENT_ID || "nextjs-bff";
-const KEYCLOAK_CLIENT_SECRET =
-    process.env.KEYCLOAK_CLIENT_SECRET || "nextjs-secret";
+const KEYCLOAK_CLIENT_SECRET=REDACTED || "nextjs-secret";
 const APP_BASE_URL = process.env.APP_BASE_URL || "http://localhost:3000";
 const USER_SERVICE_BASE_URL = process.env.USER_SERVICE_BASE_URL || "http://user-service:8082";
 
@@ -88,7 +87,7 @@ export async function GET(req) {
           body: new URLSearchParams({
             grant_type: "authorization_code",
             client_id: KEYCLOAK_CLIENT_ID,
-            client_secret: KEYCLOAK_CLIENT_SECRET,
+            client_secret=REDACTED,
             code,
             redirect_uri: `${APP_BASE_URL}/api/auth/callback`,
           }).toString(),

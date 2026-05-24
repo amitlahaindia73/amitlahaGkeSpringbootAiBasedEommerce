@@ -36,7 +36,7 @@ async function fetchWithRetry(url, options = {}) {
 }
 
 export async function gatewayFetch(path, options = {}) {
-  const token = await getAccessToken();
+  const token=REDACTED getAccessToken();
   const headers = new Headers(options.headers || {});
   headers.set("X-Request-Id", createRequestId());
 

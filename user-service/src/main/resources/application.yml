@@ -7,7 +7,7 @@ spring:
   datasource:
     url: ${USER_DB_URL:jdbc:mysql://mysql:3306/user_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false}
     username: ${MYSQL_APP_USER:appuser}
-    password: ${MYSQL_APP_PASSWORD:apppass}
+    password=REDACTED
   jpa:
     hibernate:
       ddl-auto: validate

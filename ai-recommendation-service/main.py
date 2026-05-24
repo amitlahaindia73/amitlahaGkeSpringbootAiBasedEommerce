@@ -47,7 +47,7 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv("AI_KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 AI_CACHE_TTL_SECONDS = int(os.getenv("AI_CACHE_TTL_SECONDS", "60"))
 
 GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "true").lower() == "true"
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEY=REDACTED"GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "30"))
 

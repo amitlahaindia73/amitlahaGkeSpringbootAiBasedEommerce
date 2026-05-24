@@ -5,7 +5,7 @@ import { appConfig, keycloakPublicRealmUrl } from "../../../../lib/config";
 export async function GET() {
   try {
     const store = await cookies();
-    const idToken = store.get("id_token")?.value;
+    const idToken=REDACTED"id_token")?.value;
 
     const logoutUrl =
       `${keycloakPublicRealmUrl()}/protocol/openid-connect/logout` +

@@ -13,7 +13,7 @@ export const appConfig = {
   keycloakInternalBaseUrl: process.env.KEYCLOAK_INTERNAL_BASE_URL || "http://keycloak:8080",
   keycloakRealm: process.env.KEYCLOAK_REALM || "amitra-commerce",
   keycloakClientId: process.env.KEYCLOAK_CLIENT_ID || "nextjs-bff",
-  keycloakClientSecret: process.env.KEYCLOAK_CLIENT_SECRET || "nextjs-secret"
+  keycloakClientSecret=REDACTED || "nextjs-secret"
 };
 
 export function keycloakPublicRealmUrl() {
