@@ -71,7 +71,7 @@ async function callSupportViaGateway(path, options = {}) {
 
   console.log("♻️ Retrying support call with direct gateway URL...");
 
-  const token=REDACTED getAccessToken();
+  const token = await getAccessToken();
   const headers = new Headers(options.headers || {});
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);

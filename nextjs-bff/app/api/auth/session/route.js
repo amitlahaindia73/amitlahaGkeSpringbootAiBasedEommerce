@@ -6,7 +6,7 @@ import { decodeJwtPayload } from "../../../../lib/jwt";
  * This does not cryptographically validate the token; the gateway remains the source of truth.
  */
 export async function GET() {
-  const token=REDACTED getAccessToken();
+  const token = await getAccessToken();
   const sessionUser = await getSessionUser();
   const payload = decodeJwtPayload(token);
 

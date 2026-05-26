@@ -1,3 +1,4 @@
+import GlobalHeader from "./components/GlobalHeader";
 // Global application shell and footer.
 export const metadata = {
   title: "Amitra Commerce Mesh | Amit Laha",
@@ -43,6 +44,7 @@ export default function RootLayout({ children }) {
     <html lang="en">
       <body style={shellStyle}>
         <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+          <GlobalHeader />
           <div style={contentStyle}>{children}</div>
           <footer style={footerStyle}>
             <div style={footerInnerStyle}>
