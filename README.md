@@ -35,6 +35,22 @@ By the time the cancellation occurs:
 - Customer satisfaction drops
 - Reviews and repeat purchase probability may be impacted
 
+####  Architecture & Demo Video
+
+This repository also includes a complete architecture walkthrough and live demo of:
+
+- AI Retention Agent
+- Kafka event-driven workflows
+- Kubernetes deployment
+- AI Order Support flow
+- Gemini AI integration
+- CI/CD deployment pipeline
+
+▶ Demo Video1 Complete demo on version1:
+https://www.youtube.com/watch?v=A0CgT1fMurU
+▶ Demo Video1 AI agent upgraded demo on version2:
+https://www.youtube.com/watch?v=mVm8wRhEfsA
+
 ### Platform Response
 
 Amitra Commerce Mesh adds an AI-driven proactive retention workflow:
