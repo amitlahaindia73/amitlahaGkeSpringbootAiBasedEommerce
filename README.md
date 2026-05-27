@@ -46,10 +46,9 @@ This repository also includes a complete architecture walkthrough and live demo 
 - Gemini AI integration
 - CI/CD deployment pipeline
 
-▶ Demo Video Complete demo on version-1.0:
-https://www.youtube.com/watch?v=A0CgT1fMurU
-▶ Demo Video AI agent upgraded demo on version-1.1:
-https://www.youtube.com/watch?v=mVm8wRhEfsA
+▶ Demo Video Complete demo on version-1.0:https://www.youtube.com/watch?v=A0CgT1fMurU
+
+▶ Demo Video AI agent upgraded demo on version-1.1:https://www.youtube.com/watch?v=mVm8wRhEfsA
 
 ### Platform Response
 
