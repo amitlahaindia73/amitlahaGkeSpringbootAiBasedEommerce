@@ -21,10 +21,6 @@ from typing import Any, Dict, List, Optional
 
 import redis
 import requests
-try:
-    import chromadb
-except Exception:  # pragma: no cover - optional RAG dependency fallback
-    chromadb = None
 from fastapi import FastAPI, Header, HTTPException
 from kafka import KafkaProducer
 from pydantic import BaseModel, Field
@@ -36,6 +32,9 @@ app = FastAPI(title="AI Order Support Service", version="1.0.0")
 REQUEST_COUNTER = Counter("ai_order_support_requests_total", "Total AI order support requests")
 LLM_REQUEST_COUNTER = Counter("ai_order_support_llm_requests_total", "Total Gemini requests")
 LLM_FALLBACK_COUNTER = Counter("ai_order_support_llm_fallback_total", "Total Gemini fallback responses")
+RETENTION_AGENT_ANALYSIS_COUNTER = Counter("ai_order_support_retention_agent_analysis_total", "Total silent retention-agent analyses")
+RETENTION_AGENT_EVENT_COUNTER = Counter("ai_order_support_retention_agent_events_total", "Total retention events published by silent agent")
+RETENTION_AGENT_ERROR_COUNTER = Counter("ai_order_support_retention_agent_errors_total", "Total silent retention-agent failures")
 REQUEST_LATENCY = Histogram("ai_order_support_request_latency_seconds", "Latency for support responses")
 
 REDIS_HOST = os.getenv("AI_SUPPORT_REDIS_HOST", "redis")
@@ -43,22 +42,14 @@ REDIS_PORT = int(os.getenv("AI_SUPPORT_REDIS_PORT", "6379"))
 REDIS_TTL_SECONDS = int(os.getenv("AI_SUPPORT_HISTORY_TTL_SECONDS", str(24 * 60 * 60)))
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("AI_SUPPORT_KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 KAFKA_TOPIC = os.getenv("AI_SUPPORT_KAFKA_TOPIC", "customer.support.chat.events")
+RETENTION_AGENT_ENABLED = os.getenv("AI_SUPPORT_RETENTION_AGENT_ENABLED", "true").strip().lower() == "true"
+RETENTION_KAFKA_TOPIC = os.getenv("AI_SUPPORT_RETENTION_KAFKA_TOPIC", "customer.retention.required")
+RETENTION_RISK_SCORE_THRESHOLD = int(os.getenv("AI_SUPPORT_RETENTION_RISK_SCORE_THRESHOLD", "65"))
 MAX_HISTORY_MESSAGES = int(os.getenv("AI_SUPPORT_MAX_HISTORY_MESSAGES", "10"))
 GEMINI_ENABLED = os.getenv("GEMINI_ENABLED", "true").strip().lower() == "true"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "30"))
-
-# RAG policy retrieval configuration.
-# Existing chat behavior remains unchanged unless the customer asks about
-# delivery / cancellation / return / refund policy or process.
-POLICY_RAG_ENABLED = os.getenv("POLICY_RAG_ENABLED", "true").strip().lower() == "true"
-POLICY_RAG_CHROMA_HOST = os.getenv("POLICY_RAG_CHROMA_HOST", "10.160.0.2")
-POLICY_RAG_CHROMA_PORT = int(os.getenv("POLICY_RAG_CHROMA_PORT", "8002"))
-POLICY_RAG_CHROMA_COLLECTION = os.getenv("POLICY_RAG_CHROMA_COLLECTION", "amitra_product_policy_kb")
-POLICY_RAG_EMBEDDING_URL = os.getenv("POLICY_RAG_EMBEDDING_URL", "http://10.160.0.2:8089/embed")
-POLICY_RAG_TOP_K = int(os.getenv("POLICY_RAG_TOP_K", "5"))
-POLICY_RAG_TIMEOUT_SECONDS = int(os.getenv("POLICY_RAG_TIMEOUT_SECONDS", "10"))
 
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
@@ -149,14 +140,18 @@ def read_history(user_id: str, order_number: str) -> List[Dict[str, Any]]:
     return history[-MAX_HISTORY_MESSAGES:]
 
 
-def publish_event(event: Dict[str, Any]) -> None:
+def publish_event_to_topic(topic: str, event: Dict[str, Any]) -> None:
     if not producer:
         return
     try:
-        producer.send(KAFKA_TOPIC, event)
+        producer.send(topic, event)
         producer.flush(timeout=2)
     except Exception as exc:  # pragma: no cover - runtime fallback
-        print(f"KAFKA PUBLISH FAILED: {type(exc).__name__}: {exc}", flush=True)
+        print(f"KAFKA PUBLISH FAILED topic={topic}: {type(exc).__name__}: {exc}", flush=True)
+
+
+def publish_event(event: Dict[str, Any]) -> None:
+    publish_event_to_topic(KAFKA_TOPIC, event)
 
 
 def build_order_summary(order: Dict[str, Any]) -> str:
@@ -223,209 +218,6 @@ def fallback_answer(message: str, order: Dict[str, Any]) -> str:
         f"You can ask about delivery status, payment status, ordered items, recipient details, or address details for this order."
     )
 
-
-
-def is_policy_or_process_question(message: str) -> bool:
-    """Return True only for policy/process questions so normal chat remains unchanged."""
-    text = (message or "").lower()
-    policy_keywords = [
-        "policy", "process", "procedure", "rule", "rules", "eligible", "eligibility",
-        "cancel", "cancellation", "return", "refund", "replace", "replacement",
-        "delivery policy", "delivery process", "shipping policy", "warranty",
-        "can i cancel", "can i return", "how to cancel", "how to return",
-    ]
-    return any(keyword in text for keyword in policy_keywords)
-
-
-def build_policy_search_query(order: Dict[str, Any], message: str) -> str:
-    """Build a retrieval query using customer question and selected order products."""
-    item_lines: List[str] = []
-    for item in order.get("items", []):
-        product_id = item.get("productId") or ""
-        product_name = item.get("productName") or "Unknown Product"
-        item_lines.append(f"productId={product_id}, productName={product_name}")
-
-    return "\n".join(
-        [
-            "Customer policy/process question for Amitra Commerce Mesh order.",
-            f"Question: {message}",
-            "Selected order products:",
-            "\n".join(item_lines) if item_lines else "No products available in order context.",
-            "Retrieve only applicable delivery, cancellation, return, refund, replacement, warranty policy chunks.",
-        ]
-    )
-
-
-def get_policy_embedding(text: str) -> Optional[List[float]]:
-    response = requests.post(
-        POLICY_RAG_EMBEDDING_URL,
-        json={"inputs": text},
-        timeout=POLICY_RAG_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    data = response.json()
-
-    if isinstance(data, list) and data and isinstance(data[0], list):
-        return data[0]
-    if isinstance(data, list):
-        return data
-    return None
-
-
-def retrieve_policy_context(order: Dict[str, Any], message: str) -> Dict[str, Any]:
-    """Retrieve relevant product-policy chunks from ChromaDB.
-
-    This method is intentionally best-effort. Any error must not break existing
-    support chat functionality; caller will fall back to the existing Gemini flow.
-    """
-    if not POLICY_RAG_ENABLED or chromadb is None:
-        return {"enabled": False, "context": "", "sources": []}
-
-    query_text = build_policy_search_query(order, message)
-    embedding = get_policy_embedding(query_text)
-    if not embedding:
-        return {"enabled": True, "context": "", "sources": []}
-
-    chroma_client = chromadb.HttpClient(
-        host=POLICY_RAG_CHROMA_HOST,
-        port=POLICY_RAG_CHROMA_PORT,
-    )
-    collection = chroma_client.get_collection(name=POLICY_RAG_CHROMA_COLLECTION)
-
-    result = collection.query(
-        query_embeddings=[embedding],
-        n_results=POLICY_RAG_TOP_K,
-    )
-
-    documents = result.get("documents", [[]])[0] if result else []
-    metadatas = result.get("metadatas", [[]])[0] if result else []
-    distances = result.get("distances", [[]])[0] if result else []
-
-    cleaned_documents = [doc for doc in documents if isinstance(doc, str) and doc.strip()]
-    context = "\n\n--- Retrieved Policy Chunk ---\n\n".join(cleaned_documents)
-
-    sources = []
-    for index, metadata in enumerate(metadatas):
-        if not isinstance(metadata, dict):
-            continue
-        source = {
-            "productId": metadata.get("product_id"),
-            "productName": metadata.get("product_name"),
-            "category": metadata.get("category"),
-            "policyType": metadata.get("policy_type"),
-            "policyVersion": metadata.get("policy_version"),
-            "policyFile": metadata.get("policy_file"),
-        }
-        if index < len(distances):
-            source["distance"] = distances[index]
-        sources.append(source)
-
-    return {
-        "enabled": True,
-        "query": query_text,
-        "context": context,
-        "sources": sources,
-    }
-
-
-def fallback_policy_answer(order: Dict[str, Any], message: str, policy_context: str) -> str:
-    if policy_context.strip():
-        short_context = policy_context[:1200]
-        return (
-            "I found the applicable Amitra policy information for your selected order. "
-            "Gemini is currently unavailable, so I am showing the retrieved policy context directly:\n\n"
-            f"{short_context}"
-        )
-    return (
-        f"I could not find applicable policy information for order {order.get('orderNumber')}. "
-        "Please ask about delivery, cancellation, return, or refund policy for the products in this order."
-    )
-
-
-def call_gemini_policy_answer(
-    user_id: str,
-    order: Dict[str, Any],
-    history: List[Dict[str, Any]],
-    message: str,
-    policy_result: Dict[str, Any],
-) -> Dict[str, Any]:
-    policy_context = str(policy_result.get("context") or "")
-    sources = policy_result.get("sources") or []
-
-    fallback_payload = {
-        "answer": fallback_policy_answer(order, message, policy_context),
-        "source": "rag_policy_fallback",
-        "policySources": sources,
-    }
-
-    if not policy_context.strip():
-        return fallback_payload
-
-    if not gemini_available():
-        LLM_FALLBACK_COUNTER.inc()
-        return fallback_payload
-
-    try:
-        LLM_REQUEST_COUNTER.inc()
-        system_prompt = """You are a secure e-commerce customer support assistant for Amitra Commerce Mesh.
-You are answering only policy/process questions for the authenticated user's selected order.
-
-Hard rules:
-- Use ONLY the provided order context, recent chat history, and retrieved policy context.
-- Do not invent policy rules.
-- If a customer asks a general policy question and the selected order has multiple products, explain policy per applicable product/category.
-- If the customer asks for a specific product, answer only for that product when possible.
-- If retrieved policy context is insufficient, say the policy information is not available in the current knowledge base.
-- Do not claim that cancellation, return, refund, or delivery action has been executed. Only explain eligibility/process.
-- Never expose internal vector DB, embedding, ChromaDB, or infrastructure details to the customer.
-- Keep answers concise, business-safe, and customer-friendly.
-- Return JSON only in the exact shape: {"answer": string, "source": string}
-"""
-        user_prompt = json.dumps(
-            {
-                "userId": user_id,
-                "selectedOrder": order,
-                "history": history[-MAX_HISTORY_MESSAGES:],
-                "customerQuestion": message,
-                "orderSummaryText": build_order_summary(order),
-                "retrievedPolicyContext": policy_context,
-                "retrievedPolicySources": sources,
-            },
-            ensure_ascii=False,
-        )
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-        payload = {
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"parts": [{"text": user_prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "responseMimeType": "application/json",
-            },
-        }
-        response = requests.post(
-            url,
-            headers={
-                "x-goog-api-key": GEMINI_API_KEY,
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=GEMINI_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        body = response.json()
-        candidates = body.get("candidates", [])
-        parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
-        text = parts[0].get("text", "{}") if parts else "{}"
-        parsed = json.loads(text)
-        if isinstance(parsed, dict) and isinstance(parsed.get("answer"), str) and parsed.get("answer", "").strip():
-            parsed.setdefault("source", "rag_policy_gemini")
-            parsed["policySources"] = sources
-            return parsed
-    except Exception as exc:
-        print(f"RAG POLICY fallback due to error: {type(exc).__name__}: {exc}", flush=True)
-
-    LLM_FALLBACK_COUNTER.inc()
-    return fallback_payload
 
 def call_gemini_answer(user_id: str, order: Dict[str, Any], history: List[Dict[str, Any]], message: str) -> Dict[str, Any]:
     fallback_payload = {
@@ -494,6 +286,185 @@ Hard rules:
     return fallback_payload
 
 
+def _normalize_string(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _extract_function_call(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract the first Gemini functionCall from REST response."""
+    candidates = body.get("candidates", [])
+    for candidate in candidates:
+        parts = candidate.get("content", {}).get("parts", [])
+        for part in parts:
+            function_call = part.get("functionCall")
+            if isinstance(function_call, dict):
+                return function_call
+    return None
+
+
+def _build_retention_event(
+    user_id: str,
+    email: Optional[str],
+    order_number: str,
+    message: str,
+    order: Dict[str, Any],
+    function_args: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    risk_score = _safe_int(function_args.get("riskScore"), 0)
+    risk_level = _normalize_string(function_args.get("riskLevel"), "LOW").upper()
+    recommended_action = _normalize_string(function_args.get("recommendedAction"), "NO_ACTION").upper()
+
+    # Guardrail: the LLM can recommend; the application decides whether publishing is allowed.
+    if risk_score < RETENTION_RISK_SCORE_THRESHOLD:
+        return None
+    if risk_level not in {"MEDIUM", "HIGH"}:
+        return None
+    if recommended_action == "NO_ACTION":
+        return None
+
+    return {
+        "eventType": "CUSTOMER_RETENTION_REQUIRED",
+        "userId": user_id,
+        "email": email,
+        "orderNumber": order_number,
+        "intent": _normalize_string(function_args.get("intent"), "RETENTION_RISK"),
+        "riskLevel": risk_level,
+        "riskScore": risk_score,
+        "reason": _normalize_string(function_args.get("reason"), "Customer may need proactive support."),
+        "recommendedAction": recommended_action,
+        "customerMessage": message,
+        "orderStatus": order.get("orderStatus"),
+        "paymentStatus": order.get("paymentStatus"),
+        "deliveryStatus": order.get("deliveryStatus"),
+        "source": "AI_CHAT_SILENT_RETENTION_AGENT",
+        "timestamp": int(time.time()),
+    }
+
+
+def silent_retention_agent(
+    user_id: str,
+    email: Optional[str],
+    order: Dict[str, Any],
+    history: List[Dict[str, Any]],
+    message: str,
+) -> None:
+    """Enterprise-style silent AI agent.
+
+    This does not change the customer-facing chat answer. It asks Gemini to decide
+    whether a customer-retention Kafka event is needed using function calling.
+    If Gemini calls the tool, this application validates the tool arguments and
+    publishes a Kafka event.
+    """
+    if not (RETENTION_AGENT_ENABLED and gemini_available()):
+        return
+
+    try:
+        RETENTION_AGENT_ANALYSIS_COUNTER.inc()
+        system_prompt = """You are a silent customer-retention AI agent for Amitra Commerce Mesh.
+Your job is to detect whether the current customer chat shows a meaningful risk that the customer may cancel the order, abandon the purchase, request refund due to dissatisfaction, or needs proactive support.
+
+Important enterprise rules:
+- Do not respond to the customer.
+- Do not accuse the customer.
+- Do not create alerts for normal order-status questions.
+- Trigger the function only when proactive support can reasonably help retain the customer before cancellation or churn.
+- Consider conversation history, selected order context, delivery/payment/order status, and message tone.
+- If evidence is weak, do not call any function.
+"""
+        user_prompt = json.dumps(
+            {
+                "userId": user_id,
+                "selectedOrder": order,
+                "history": history[-MAX_HISTORY_MESSAGES:],
+                "latestCustomerMessage": message,
+                "orderSummaryText": build_order_summary(order),
+            },
+            ensure_ascii=False,
+        )
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+            "tools": [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": "publish_customer_retention_event",
+                            "description": "Publish a Kafka retention event when the chat indicates medium or high risk of cancellation/churn and proactive support is useful.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "intent": {
+                                        "type": "string",
+                                        "enum": [
+                                            "CANCEL_RISK",
+                                            "DELIVERY_DELAY_DISSATISFACTION",
+                                            "REFUND_FRUSTRATION",
+                                            "PAYMENT_CONCERN",
+                                            "ORDER_ABANDONMENT_RISK",
+                                            "GENERAL_RETENTION_RISK",
+                                        ],
+                                    },
+                                    "riskLevel": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                                    "riskScore": {"type": "integer", "description": "0 to 100 retention risk score"},
+                                    "reason": {"type": "string", "description": "Short business reason for proactive support"},
+                                    "recommendedAction": {
+                                        "type": "string",
+                                        "enum": [
+                                            "CALL_CUSTOMER_BEFORE_CANCELLATION",
+                                            "ESCALATE_TO_SUPPORT",
+                                            "SEND_DELAY_APOLOGY",
+                                            "SEND_PAYMENT_HELP",
+                                            "NO_ACTION",
+                                        ],
+                                    },
+                                },
+                                "required": ["intent", "riskLevel", "riskScore", "reason", "recommendedAction"],
+                            },
+                        }
+                    ]
+                }
+            ],
+            "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+            "generationConfig": {"temperature": 0.0},
+        }
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        response = requests.post(
+            url,
+            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+            json=payload,
+            timeout=GEMINI_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        function_call = _extract_function_call(response.json())
+        if not function_call or function_call.get("name") != "publish_customer_retention_event":
+            return
+
+        args = function_call.get("args") or {}
+        if not isinstance(args, dict):
+            return
+
+        order_number = _normalize_string(order.get("orderNumber"))
+        event = _build_retention_event(user_id, email, order_number, message, order, args)
+        if not event:
+            return
+
+        publish_event_to_topic(RETENTION_KAFKA_TOPIC, event)
+        RETENTION_AGENT_EVENT_COUNTER.inc()
+    except Exception as exc:
+        RETENTION_AGENT_ERROR_COUNTER.inc()
+        print(f"SILENT RETENTION AGENT FAILED: {type(exc).__name__}: {exc}", flush=True)
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     return {
@@ -503,9 +474,9 @@ def health() -> Dict[str, Any]:
         "geminiEnabled": GEMINI_ENABLED,
         "geminiConfigured": bool(GEMINI_API_KEY.strip()),
         "geminiModel": GEMINI_MODEL,
-        "policyRagEnabled": POLICY_RAG_ENABLED,
-        "policyRagChromaHost": POLICY_RAG_CHROMA_HOST,
-        "policyRagChromaCollection": POLICY_RAG_CHROMA_COLLECTION,
+        "retentionAgentEnabled": RETENTION_AGENT_ENABLED,
+        "retentionTopic": RETENTION_KAFKA_TOPIC,
+        "retentionRiskScoreThreshold": RETENTION_RISK_SCORE_THRESHOLD,
     }
 
 
@@ -549,22 +520,10 @@ def support_chat_message(
         raise HTTPException(status_code=400, detail="orderNumber is required.")
 
     history_before = read_history(user_id, order_number)
-    customer_message = request.message.strip()
+    answer_payload = call_gemini_answer(user_id, order, history_before, request.message.strip())
+    answer_text = str(answer_payload.get("answer") or fallback_answer(request.message, order)).strip()
 
-    if is_policy_or_process_question(customer_message):
-        try:
-            policy_result = retrieve_policy_context(order, customer_message)
-            answer_payload = call_gemini_policy_answer(user_id, order, history_before, customer_message, policy_result)
-        except Exception as exc:
-            # Safety-first fallback: policy RAG must never break existing support chat.
-            print(f"POLICY RAG disabled for this request due to error: {type(exc).__name__}: {exc}", flush=True)
-            answer_payload = call_gemini_answer(user_id, order, history_before, customer_message)
-    else:
-        answer_payload = call_gemini_answer(user_id, order, history_before, customer_message)
-
-    answer_text = str(answer_payload.get("answer") or fallback_answer(customer_message, order)).strip()
-
-    append_history(user_id, order_number, "user", customer_message)
+    append_history(user_id, order_number, "user", request.message.strip())
     append_history(user_id, order_number, "assistant", answer_text)
     history_after = read_history(user_id, order_number)
 
@@ -574,12 +533,20 @@ def support_chat_message(
             "userId": user_id,
             "email": x_auth_email,
             "orderNumber": order_number,
-            "question": customer_message,
+            "question": request.message.strip(),
             "answer": answer_text,
             "source": answer_payload.get("source", "fallback"),
-            "policySources": answer_payload.get("policySources"),
             "timestamp": int(time.time()),
         }
+    )
+
+    # Silent enterprise AI agent: does not modify customer answer or existing chat behavior.
+    silent_retention_agent(
+        user_id=user_id,
+        email=x_auth_email,
+        order=order,
+        history=history_before,
+        message=request.message.strip(),
     )
 
     REQUEST_LATENCY.observe(time.time() - start)

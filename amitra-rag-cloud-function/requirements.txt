@@ -1,0 +1,7 @@
+functions-framework
+cloudevents
+google-cloud-storage
+pymongo
+chromadb
+pypdf
+requests
